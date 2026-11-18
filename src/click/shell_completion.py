@@ -517,13 +517,27 @@ class PowerShellComplete(ShellComplete):
     """Shell completion for PowerShell (Windows PowerShell 5.1+ and pwsh 7+).
 
     .. versionadded:: 8.5.0
+    .. versionchanged:: 8.6.0
+        The command line is split with PowerShell's quoting rules, so a
+        Windows path keeps its backslashes, and a program name containing a
+        space is quoted in the generated script.
     """
 
     name: t.ClassVar[str] = "powershell"
     source_template: t.ClassVar[str] = _SOURCE_POWERSHELL
 
+    def source_vars(self) -> _SourceVarsDict:
+        # The template interpolates the program name into `-CommandName` and
+        # `&`, so an executable path with a space in it has to be quoted or
+        # the generated script does not parse.
+        vars = super().source_vars()
+        vars["prog_name"] = "'" + vars["prog_name"].replace("'", "''") + "'"
+        return vars
+
     def get_completion_args(self) -> tuple[list[str], str]:
-        cwords = split_arg_string(os.environ["COMP_WORDS"])
+        # PowerShell puts the raw command line in COMP_WORDS, with Windows
+        # paths in it, so the POSIX splitting rules would drop backslashes.
+        cwords = _split_arg_string_powershell(os.environ["COMP_WORDS"])
         cword = int(os.environ["COMP_CWORD"])
         args = cwords[1:cword]
 
@@ -593,6 +607,68 @@ def get_completion_class(shell: str) -> type[ShellComplete] | None:
     :param shell: Name the class is registered under.
     """
     return _available_shells.get(shell)
+
+
+def _split_arg_string_powershell(string: str) -> list[str]:
+    """Split an argument string the way PowerShell splits a command line.
+
+    PowerShell separates arguments on whitespace, groups them with single or
+    double quotes, and escapes with a backtick. A backslash is an ordinary
+    character — it is the Windows path separator — unlike in POSIX shells,
+    where :func:`split_arg_string` has to treat it as an escape. Splitting a
+    Windows path with the POSIX rules drops every backslash, so completion
+    never sees the argument the user typed.
+
+    An unterminated quote keeps the partial token, as
+    :func:`split_arg_string` does.
+    """
+    args: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    in_token = False
+    index = 0
+    length = len(string)
+
+    while index < length:
+        char = string[index]
+
+        if char == "`" and quote != "'" and index + 1 < length:
+            current.append(string[index + 1])
+            in_token = True
+            index += 2
+            continue
+
+        if quote is not None:
+            if char == quote:
+                if quote == "'" and string[index : index + 2] == "''":
+                    current.append("'")
+                    index += 2
+                    continue
+                quote = None
+            else:
+                current.append(char)
+            in_token = True
+            index += 1
+            continue
+
+        if char in "\"'":
+            quote = char
+            in_token = True
+        elif char.isspace():
+            if in_token:
+                args.append("".join(current))
+                current = []
+                in_token = False
+        else:
+            current.append(char)
+            in_token = True
+
+        index += 1
+
+    if in_token:
+        args.append("".join(current))
+
+    return args
 
 
 def split_arg_string(string: str) -> list[str]:

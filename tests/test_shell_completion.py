@@ -615,3 +615,35 @@ def test_powershell_format_completion_escapes_help():
     # produced by ZshComplete.
     item = CompletionItem("--at")
     assert pc.format_completion(item) == "plain\n--at\n_"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expect"),
+    [
+        # A backslash is the Windows path separator, not an escape character.
+        (r"cli sub C:\Users\ann\doc", ["cli", "sub", r"C:\Users\ann\doc"]),
+        ("cli sub C:\\Temp\\", ["cli", "sub", "C:\\Temp\\"]),
+        (r'cli sub "C:\Program Files\app"', ["cli", "sub", r"C:\Program Files\app"]),
+        (r"cli sub 'C:\Program Files\app'", ["cli", "sub", r"C:\Program Files\app"]),
+        ("cli ''", ["cli", ""]),
+        ("cli 'it''s'", ["cli", "it's"]),
+        ("cli `a` b", ["cli", "a b"]),
+        ('cli "unterminated', ["cli", "unterminated"]),
+    ],
+)
+def test_powershell_split_arg_string(raw, expect):
+    assert click.shell_completion._split_arg_string_powershell(raw) == expect
+
+
+def test_powershell_completion_args_keep_windows_paths(monkeypatch):
+    pc = PowerShellComplete(Command("cli"), {}, "cli", "_CLI_COMPLETE")
+    monkeypatch.setenv("COMP_WORDS", r"cli sub C:\Users\ann\doc")
+    monkeypatch.setenv("COMP_CWORD", "3")
+    assert pc.get_completion_args() == (["sub", r"C:\Users\ann\doc"], "")
+
+
+def test_powershell_source_quotes_prog_name_with_spaces():
+    pc = PowerShellComplete(Command("cli"), {}, "my cli", "_CLI_COMPLETE")
+    source = pc.source()
+    assert "-CommandName 'my cli'" in source
+    assert "& 'my cli'" in source
